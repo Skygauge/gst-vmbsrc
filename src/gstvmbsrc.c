@@ -30,10 +30,14 @@
  * </refsect2>
  */
 
+#include <stdlib.h>
+#include <stdio.h>
+
 #include "gstvmbsrc.h"
 #include "helpers.h"
 #include "vimbax_helpers.h"
 #include "pixelformats.h"
+#include "ListCameras.h"
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -75,7 +79,9 @@ enum
 {
     PROP_0,
     PROP_CAMERA_ID,
+    PROP_CAMERA_NAME,
     PROP_SETTINGS_FILENAME,
+    PROP_SETTINGS_PATH,
     PROP_EXPOSURETIME,
     PROP_EXPOSUREAUTO,
     PROP_BALANCEWHITEAUTO,
@@ -349,11 +355,34 @@ static void gst_vmbsrc_class_init(GstVmbSrcClass *klass)
             G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
     g_object_class_install_property(
         gobject_class,
+        PROP_CAMERA_NAME,
+        g_param_spec_string(
+            "camera-name",
+            "Camera Name",
+            "Name of the camera images should be recorded from",
+            "",
+            G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+    g_object_class_install_property(
+        gobject_class,
         PROP_SETTINGS_FILENAME,
         g_param_spec_string(
             "settingsfile",
             "Camera settings filepath",
-            "Path to XML file containing camera settings that should be applied. All settings from this file will be applied before any other property is set. Explicitely set properties will overwrite features set from this file!",
+            "Path to XML files containing camera settings that should be applied. "
+            "All settings from this file will be applied before any other property is set. "
+            "Explicitely set properties will overwrite features set from this file!",
+            "",
+            G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+    g_object_class_install_property(
+        gobject_class,
+        PROP_SETTINGS_PATH,
+        g_param_spec_string(
+            "settings-path",
+            "Camera settings path",
+            "Path to XML files containing camera settings that should be applied. "
+            "It is expected to have a XML file the same as the camera model name in this path. "
+            "All settings from this file will be applied before any other property is set. "
+            "Explicitely set properties will overwrite features set from this file!",
             "",
             G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
     g_object_class_install_property(
@@ -555,11 +584,21 @@ static void gst_vmbsrc_init(GstVmbSrc *vmbsrc)
             g_object_class_find_property(
                 gobject_class,
                 "camera")));
+    vmbsrc->camera.name = g_value_dup_string(
+        g_param_spec_get_default_value(
+            g_object_class_find_property(
+                gobject_class,
+                "camera-name")));
     vmbsrc->properties.settings_file_path = g_value_dup_string(
         g_param_spec_get_default_value(
             g_object_class_find_property(
                 gobject_class,
                 "settingsfile")));
+    vmbsrc->properties.settings_path = g_value_dup_string(
+        g_param_spec_get_default_value(
+            g_object_class_find_property(
+                gobject_class,
+                "settings-path")));
     vmbsrc->properties.exposuretime = g_value_get_double(
         g_param_spec_get_default_value(
             g_object_class_find_property(
@@ -649,12 +688,26 @@ void gst_vmbsrc_set_property(GObject *object, guint property_id, const GValue *v
         }
         vmbsrc->camera.id = g_value_dup_string(value);
         break;
+    case PROP_CAMERA_NAME:
+        if (strcmp(vmbsrc->camera.name, "") != 0)
+        {
+            free((void *)vmbsrc->camera.name); // Free memory of old entry
+        }
+        vmbsrc->camera.name = g_value_dup_string(value);
+        break;
     case PROP_SETTINGS_FILENAME:
         if (strcmp(vmbsrc->properties.settings_file_path, "") != 0)
         {
             free((void *)vmbsrc->properties.settings_file_path); // Free memory of old entry
         }
         vmbsrc->properties.settings_file_path = g_value_dup_string(value);
+        break;
+    case PROP_SETTINGS_PATH:
+        if (strcmp(vmbsrc->properties.settings_path, "") != 0)
+        {
+            free((void *)vmbsrc->properties.settings_path); // Free memory of old entry
+        }
+        vmbsrc->properties.settings_path = g_value_dup_string(value);
         break;
     case PROP_EXPOSURETIME:
         vmbsrc->properties.exposuretime = g_value_get_double(value);
@@ -721,8 +774,14 @@ void gst_vmbsrc_get_property(GObject *object, guint property_id, GValue *value, 
     case PROP_CAMERA_ID:
         g_value_set_string(value, vmbsrc->camera.id);
         break;
+    case PROP_CAMERA_NAME:
+        g_value_set_string(value, vmbsrc->camera.name);
+        break;
     case PROP_SETTINGS_FILENAME:
         g_value_set_string(value, vmbsrc->properties.settings_file_path);
+        break;
+    case PROP_SETTINGS_PATH:
+        g_value_set_string(value, vmbsrc->properties.settings_path);
         break;
     case PROP_EXPOSURETIME:
         // TODO: Workaround for cameras with legacy "ExposureTimeAbs" feature should be replaced with a general legacy
@@ -1187,6 +1246,40 @@ static gboolean gst_vmbsrc_set_caps(GstBaseSrc *src, GstCaps *caps)
     return result == VmbErrorSuccess ? gst_video_info_from_caps(&vmbsrc->video_info, caps) : FALSE;
 }
 
+static void add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
+{
+    // Populates the settings_file_path based on the camera model and settings-path gstreamer
+    // property.
+    if (strcmp(vmbsrc->properties.settings_path, "") == 0) {
+        return;
+    }
+
+    const int MODEL_NAME_LEN = strlen(vmbsrc->camera.info.modelName);
+    const int FILE_PATH_LEN = strlen(vmbsrc->properties.settings_path);
+    const char FILE_SEPARATOR[] = "/";
+    const char FILE_EXTENSION[] = ".xml";
+    const int TERMINATOR_LEN = 1;
+    const int final_len = FILE_PATH_LEN + sizeof(FILE_SEPARATOR) + MODEL_NAME_LEN
+                        + sizeof(FILE_EXTENSION) + TERMINATOR_LEN;
+
+    free((void *)vmbsrc->properties.settings_file_path);
+    vmbsrc->properties.settings_file_path = malloc(final_len);
+
+    char model_name[MODEL_NAME_LEN + 1];
+    strcpy(model_name, vmbsrc->camera.info.modelName);
+    model_name[sizeof(model_name) - 1] = '\0';
+    replace_space_with_underscore(model_name);
+
+    sprintf(vmbsrc->properties.settings_file_path,
+            "%s%s%s%s",
+            vmbsrc->properties.settings_path,
+            FILE_SEPARATOR,
+            model_name,
+            FILE_EXTENSION);
+
+    GST_INFO_OBJECT(vmbsrc, "New file path: %s", vmbsrc->properties.settings_file_path);
+}
+
 /* start and stop processing, ideal for opening/closing the resource */
 static gboolean gst_vmbsrc_start(GstBaseSrc *src)
 {
@@ -1213,6 +1306,7 @@ static gboolean gst_vmbsrc_start(GstBaseSrc *src)
     // Load settings from given file if a path was given (settings_file_path is not empty)
     if (strcmp(vmbsrc->properties.settings_file_path, "") != 0)
     {
+        add_model_to_settings_file_path(vmbsrc);
         GST_WARNING_OBJECT(vmbsrc,
                            "\"%s\" was given as settingsfile. Other feature settings passed as element properties will be ignored!",
                            vmbsrc->properties.settings_file_path);
@@ -1408,6 +1502,49 @@ GST_PLUGIN_DEFINE(GST_VERSION_MAJOR,
                   PACKAGE,
                   HOMEPAGE_URL)
 
+static void find_camera_id(GstVmbSrc *vmbsrc)
+{
+    // Find camera id based on camera name if camera name was specific in gstreamer properties.
+    // Camera name is programmable through the VimbaViewer.
+    if (strcmp(vmbsrc->camera.name, "") == 0) {
+        return;
+    }
+
+    VmbCameraInfo_t* cameras = NULL;
+    VmbUint32_t camera_cnt;
+    VmbError_t err = ListCameras(&cameras, &camera_cnt);
+
+    if (err != VmbErrorSuccess) {
+        GST_ERROR_OBJECT(vmbsrc,
+                         "Failed to get CAMERA ID from CAMERA NAME: %s",
+                         vmbsrc->camera.name);
+        return;
+    }
+
+    VmbCameraInfo_t* const cameras_end = cameras + camera_cnt;
+
+    bool found_camera = false;
+    for (VmbCameraInfo_t* cam = cameras; cam != cameras_end; ++cam) {
+        if (strcmp(cam->cameraName, vmbsrc->camera.name) == 0) {
+            GST_INFO_OBJECT(vmbsrc,
+                            "Found CAMERA NAME: %s with CAMERA ID: %s",
+                            cam->cameraName,
+                            cam->cameraIdString);
+            free((void *)vmbsrc->camera.id);
+            vmbsrc->camera.id = malloc(strlen(cam->cameraIdString) + 1);
+            strcpy(vmbsrc->camera.id, cam->cameraIdString);
+            found_camera = true;
+            break;
+        }
+    }
+
+    if (!found_camera) {
+        GST_ERROR_OBJECT(vmbsrc,
+                         "Failed to find CAMERA NAME: %s",
+                         vmbsrc->camera.name);
+    }
+}
+
 /**
  * @brief Opens the connection to the camera given by the ID passed as vmbsrc property and stores the resulting handle
  *
@@ -1416,6 +1553,8 @@ GST_PLUGIN_DEFINE(GST_VERSION_MAJOR,
  */
 VmbError_t open_camera_connection(GstVmbSrc *vmbsrc)
 {
+    find_camera_id(vmbsrc);
+
     VmbError_t result = VmbCameraOpen(vmbsrc->camera.id, VmbAccessModeFull, &vmbsrc->camera.handle);
     if (result == VmbErrorSuccess)
     {
