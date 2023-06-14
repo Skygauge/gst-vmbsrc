@@ -157,6 +157,7 @@ struct _GstVmbSrc
     struct
     {
         char *id;
+        char *name;
         VmbHandle_t handle;
         VmbCameraInfo_t info;
         VmbUint32_t supported_formats_count;
@@ -169,6 +170,7 @@ struct _GstVmbSrc
     struct
     {
         char *settings_file_path;
+        char *settings_path;
         double exposuretime;
         int exposureauto;
         int balancewhiteauto;
