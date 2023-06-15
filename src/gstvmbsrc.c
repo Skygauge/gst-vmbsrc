@@ -1303,10 +1303,11 @@ static gboolean gst_vmbsrc_start(GstBaseSrc *src)
         }
     }
 
+    add_model_to_settings_file_path(vmbsrc);
+
     // Load settings from given file if a path was given (settings_file_path is not empty)
     if (strcmp(vmbsrc->properties.settings_file_path, "") != 0)
     {
-        add_model_to_settings_file_path(vmbsrc);
         GST_WARNING_OBJECT(vmbsrc,
                            "\"%s\" was given as settingsfile. Other feature settings passed as element properties will be ignored!",
                            vmbsrc->properties.settings_file_path);
