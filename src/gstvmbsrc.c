@@ -1258,24 +1258,47 @@ static void add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
     const int FILE_PATH_LEN = strlen(vmbsrc->properties.settings_path);
     const char FILE_SEPARATOR[] = "/";
     const char FILE_EXTENSION[] = ".xml";
+    const char FIRMWARE_SEPARATOR[] = "-";
+    const int FIRMWARE_LEN = 2;
     const int TERMINATOR_LEN = 1;
-    const int final_len = FILE_PATH_LEN + sizeof(FILE_SEPARATOR) + MODEL_NAME_LEN
-                        + sizeof(FILE_EXTENSION) + TERMINATOR_LEN;
+    const int FINAL_LEN = FILE_PATH_LEN + sizeof(FILE_SEPARATOR) + MODEL_NAME_LEN
+                        + FIRMWARE_LEN + sizeof(FIRMWARE_SEPARATOR) + sizeof(FILE_EXTENSION)
+                        + TERMINATOR_LEN;
+
+    // Copy the last 2 characters from the camera name. The last 2 characters should be the
+    // major firmware number.
+    // The camera name is created manually through the VimbaXViewer program.
+    char firmware_num[3];
+    strcpy(firmware_num, vmbsrc->camera.name + strlen(vmbsrc->camera.name) - 2);
+    firmware_num[2] = '\0';
+    bool valid_fw = atoi(firmware_num) != 0;
+    GST_INFO_OBJECT(vmbsrc, "Firmware Number: %s", firmware_num);
 
     free((void *)vmbsrc->properties.settings_file_path);
-    vmbsrc->properties.settings_file_path = malloc(final_len);
+    vmbsrc->properties.settings_file_path = malloc(FINAL_LEN);
 
     char model_name[MODEL_NAME_LEN + 1];
     strcpy(model_name, vmbsrc->camera.info.modelName);
     model_name[sizeof(model_name) - 1] = '\0';
     replace_space_with_underscore(model_name);
 
-    sprintf(vmbsrc->properties.settings_file_path,
-            "%s%s%s%s",
-            vmbsrc->properties.settings_path,
-            FILE_SEPARATOR,
-            model_name,
-            FILE_EXTENSION);
+    if (valid_fw) {
+        sprintf(vmbsrc->properties.settings_file_path,
+                "%s%s%s%s%s%s",
+                vmbsrc->properties.settings_path,
+                FILE_SEPARATOR,
+                model_name,
+                FIRMWARE_SEPARATOR,
+                firmware_num,
+                FILE_EXTENSION);
+    } else {
+        sprintf(vmbsrc->properties.settings_file_path,
+                "%s%s%s%s",
+                vmbsrc->properties.settings_path,
+                FILE_SEPARATOR,
+                model_name,
+                FILE_EXTENSION);
+    }
 
     GST_INFO_OBJECT(vmbsrc, "New file path: %s", vmbsrc->properties.settings_file_path);
 }
@@ -1526,7 +1549,7 @@ static void find_camera_id(GstVmbSrc *vmbsrc)
 
     bool found_camera = false;
     for (VmbCameraInfo_t* cam = cameras; cam != cameras_end; ++cam) {
-        if (strcmp(cam->cameraName, vmbsrc->camera.name) == 0) {
+        if (strstr(cam->cameraName, vmbsrc->camera.name) != NULL) {
             GST_INFO_OBJECT(vmbsrc,
                             "Found CAMERA NAME: %s with CAMERA ID: %s",
                             cam->cameraName,
@@ -1534,6 +1557,12 @@ static void find_camera_id(GstVmbSrc *vmbsrc)
             free((void *)vmbsrc->camera.id);
             vmbsrc->camera.id = malloc(strlen(cam->cameraIdString) + 1);
             strcpy(vmbsrc->camera.id, cam->cameraIdString);
+
+            // Update camera name with one that was found.
+            free((void *)vmbsrc->camera.name);
+            vmbsrc->camera.name = malloc(strlen(cam->cameraName) + 1);
+            strcpy(vmbsrc->camera.name , cam->cameraName);
+
             found_camera = true;
             break;
         }
