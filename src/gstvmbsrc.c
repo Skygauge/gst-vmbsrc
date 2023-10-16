@@ -1246,16 +1246,19 @@ static gboolean gst_vmbsrc_set_caps(GstBaseSrc *src, GstCaps *caps)
     return result == VmbErrorSuccess ? gst_video_info_from_caps(&vmbsrc->video_info, caps) : FALSE;
 }
 
-static void add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
+static bool add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
 {
     // Populates the settings_file_path based on the camera model and settings-path gstreamer
     // property.
     if (strcmp(vmbsrc->properties.settings_path, "") == 0) {
-        return;
+        return FALSE;
     }
+
+    const char OUTPUT_FILENAME[] = "config.xml";
 
     const int MODEL_NAME_LEN = strlen(vmbsrc->camera.info.modelName);
     const int FILE_PATH_LEN = strlen(vmbsrc->properties.settings_path);
+    const int OUTPUT_FILE_LEN = strlen(OUTPUT_FILENAME);
     const char FILE_SEPARATOR[] = "/";
     const char FILE_EXTENSION[] = ".xml";
     const char FIRMWARE_SEPARATOR[] = "-";
@@ -1264,6 +1267,7 @@ static void add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
     const int FINAL_LEN = FILE_PATH_LEN + sizeof(FILE_SEPARATOR) + MODEL_NAME_LEN
                         + FIRMWARE_LEN + sizeof(FIRMWARE_SEPARATOR) + sizeof(FILE_EXTENSION)
                         + TERMINATOR_LEN;
+    const int OUTPUT_FILE_PATH_LEN = FILE_PATH_LEN + sizeof(FILE_SEPARATOR) + OUTPUT_FILE_LEN;
 
     // Copy the last 2 characters from the camera name. The last 2 characters should be the
     // major firmware number.
@@ -1274,16 +1278,15 @@ static void add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
     bool valid_fw = atoi(firmware_num) != 0;
     GST_INFO_OBJECT(vmbsrc, "Firmware Number: %s", firmware_num);
 
-    free((void *)vmbsrc->properties.settings_file_path);
-    vmbsrc->properties.settings_file_path = malloc(FINAL_LEN);
-
     char model_name[MODEL_NAME_LEN + 1];
     strcpy(model_name, vmbsrc->camera.info.modelName);
     model_name[sizeof(model_name) - 1] = '\0';
     replace_space_with_underscore(model_name);
 
+    char xml_file_path[FINAL_LEN];
+
     if (valid_fw) {
-        sprintf(vmbsrc->properties.settings_file_path,
+        sprintf(xml_file_path,
                 "%s%s%s%s%s%s",
                 vmbsrc->properties.settings_path,
                 FILE_SEPARATOR,
@@ -1292,7 +1295,7 @@ static void add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
                 firmware_num,
                 FILE_EXTENSION);
     } else {
-        sprintf(vmbsrc->properties.settings_file_path,
+        sprintf(xml_file_path,
                 "%s%s%s%s",
                 vmbsrc->properties.settings_path,
                 FILE_SEPARATOR,
@@ -1300,7 +1303,27 @@ static void add_model_to_settings_file_path(GstVmbSrc *vmbsrc)
                 FILE_EXTENSION);
     }
 
+    // Execute sed to replace __DEV__ in file with actual camera ID.
+    // Output config file to config.xml (OUTPUT_FILENAME).
+    char sed_cmd[256];
+    snprintf(sed_cmd, 256, "sed 's/__DEV__/%s/g' %s > %s/%s", 
+             vmbsrc->camera.info.cameraIdString, 
+             xml_file_path, 
+             vmbsrc->properties.settings_path,
+             OUTPUT_FILENAME);
+
+    if (system(sed_cmd) != 0) {
+        return FALSE;
+    }
+
+    free((void *)vmbsrc->properties.settings_file_path);
+    vmbsrc->properties.settings_file_path = malloc(OUTPUT_FILE_PATH_LEN);
+    sprintf(vmbsrc->properties.settings_file_path, "%s%s", 
+            vmbsrc->properties.settings_path, OUTPUT_FILENAME);
+
     GST_INFO_OBJECT(vmbsrc, "New file path: %s", vmbsrc->properties.settings_file_path);
+
+    return TRUE;
 }
 
 /* start and stop processing, ideal for opening/closing the resource */
@@ -1326,7 +1349,9 @@ static gboolean gst_vmbsrc_start(GstBaseSrc *src)
         }
     }
 
-    add_model_to_settings_file_path(vmbsrc);
+    if (!add_model_to_settings_file_path(vmbsrc)) {
+        return FALSE;
+    }
 
     // Load settings from given file if a path was given (settings_file_path is not empty)
     if (strcmp(vmbsrc->properties.settings_file_path, "") != 0)
